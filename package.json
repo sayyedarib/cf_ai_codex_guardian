@@ -22,6 +22,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@ai-sdk/provider": "^4.0.24",
     "@ai-sdk/react": "^4.0.133",
     "@cloudflare/ai-chat": "^0.12.1",
     "@cloudflare/kumo": "^2.14.0",

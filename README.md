@@ -1,245 +1,118 @@
-# Agent Starter
+# Codex Guardian
 
-![npm i agents command](./npm-agents-banner.svg)
+**An AI agent that reviews GitHub pull requests against your team's engineering standards — "the codex".**
 
-<a href="https://deploy.workers.cloudflare.com/?url=https://github.com/cloudflare/agents-starter"><img src="https://deploy.workers.cloudflare.com/button" alt="Deploy to Cloudflare"/></a>
+You manage the codex by chatting ("add a rule: no TODO without a ticket", "allow console.log in scripts/\*\*"), then ask for a review. A durable workflow fetches the PR, runs cheap regex rules and then LLM rules, drops anything an exception covers, and explains every finding with **file, line, the rule it broke, and how to fix it** — live, step by step.
 
-A starter template for building AI chat agents on Cloudflare, powered by the [Agents SDK](https://developers.cloudflare.com/agents/).
+**Live demo:** https://codex-guardian.sayyedaribhussain4321.workers.dev
+(Each team gets its own codex: add `?codex=your-team` to the URL.)
 
-Uses Workers AI (no API key required), with tools for weather, timezone detection, calculations with approval, task scheduling, and vision (image input).
+![Review in progress and results](docs/screenshot-review.png)
 
-## Quick start
+Built on Cloudflare for the AI app assignment:
 
-```bash
-npx create-cloudflare@latest --template cloudflare/agents-starter
-cd agents-starter
+| Requirement                 | How it's met                                                                                                                                                                                      |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **LLM**                     | Llama 3.3 70B (`@cf/meta/llama-3.3-70b-instruct-fp8-fast`) on Workers AI, for chat _and_ rule evaluation                                                                                          |
+| **Workflow / coordination** | `GuardianAgent` (Agents SDK `AIChatAgent` on a Durable Object) coordinates chat and state; `ReviewWorkflow` (Cloudflare Workflows via `AgentWorkflow`) runs each review step durably with retries |
+| **User input**              | React chat UI served by the same Worker, built on the agents-starter and Kumo components                                                                                                          |
+| **Memory / state**          | Rules, exceptions and review history in the agent's SQLite; chat history persisted by `AIChatAgent`; state synced live to every open tab                                                          |
+
+## Architecture
+
+```mermaid
+flowchart LR
+  UI["React UI<br/>chat · codex panel · review cards"]
+  subgraph Worker["Cloudflare Worker"]
+    Agent["GuardianAgent<br/>AIChatAgent on a Durable Object<br/>SQLite: rules · exceptions · reviews · chat"]
+    WF["ReviewWorkflow<br/>(Cloudflare Workflows)"]
+  end
+  AI["Workers AI<br/>Llama 3.3 70B"]
+  GH["GitHub REST API"]
+
+  UI <-->|"WebSocket: chat stream,<br/>live state, @callable RPC"| Agent
+  Agent -->|"chat + tool calls"| AI
+  Agent -->|"runWorkflow()"| WF
+  WF -->|"getCodexSnapshot / recordOutcome (RPC)"| Agent
+  WF -.->|"reportProgress → onWorkflowProgress"| Agent
+  WF -->|"rule evaluation (JSON mode)"| AI
+  WF -->|"PR files + patches, post comment"| GH
+```
+
+### The review workflow
+
+Each external call is its own `step.do`, so it's retried with backoff and never repeated once it succeeds. Progress is pushed to the agent after every step and shown in the review card.
+
+1. **Fetch PR** — PR metadata and per-file patches from GitHub. 4xx errors (bad URL, private repo without token) fail fast instead of burning retries.
+2. **Snapshot codex** — the enabled rules and exceptions are copied, so edits made mid-review don't change the result.
+3. **Regex rules** — matched against the lines the PR _adds_, with real new-file line numbers.
+4. **LLM rules** — added lines are split into small batches (≤120 lines × ≤4 rules, 4 in parallel). The model gets numbered lines and must answer in JSON. Output is validated with zod; a finding for an unknown rule or a line that isn't in the batch is discarded, so the model can't invent locations. A batch that keeps failing is skipped and noted — **a bad LLM response never fails the review**.
+5. **Apply exceptions** — findings waived by an exception (rule + file glob) are dropped and counted.
+6. **Save review** — stored in SQLite and synced to the UI.
+7. **Post PR comment (optional)** — only if you asked for it. The workflow then **waits (durably, up to 24h) for you to click Approve** in the chat before posting.
+
+## Run it locally
+
+Requirements: Node 24 LTS, a Cloudflare account (Workers AI runs remotely, even in dev).
+
+```sh
 npm install
-npm run dev
+npx wrangler login          # once
+cp .dev.vars.example .dev.vars   # optional: add a GITHUB_TOKEN
+npm run dev                 # http://localhost:5173
 ```
 
-> **Cloudflare authentication is required to run locally.** This template uses
-> Workers AI with `"ai": { "remote": true }` in `wrangler.jsonc`, and Workers AI
-> has no local simulator — so `npm run dev` opens a remote proxy session against
-> Cloudflare and needs you to be authenticated. Either run `wrangler login` once
-> in an interactive terminal, or set a `CLOUDFLARE_API_TOKEN` environment
-> variable (e.g. in a `.env` file). No third-party (OpenAI/Anthropic) key is
-> needed, but a Cloudflare login is.
-
-Open [http://localhost:5173](http://localhost:5173) to see your agent in action.
-
-Try these prompts to see the different features:
-
-- **"What's the weather in Paris?"** — server-side tool (runs automatically)
-- **"What timezone am I in?"** — client-side tool (browser provides the answer)
-- **"Calculate 5000 \* 3"** — approval tool (asks you before running)
-- **"Remind me in 5 minutes to take a break"** — scheduling
-- **Drop an image and ask "What's in this image?"** — vision (image understanding)
-
-## Project structure
-
-```
-src/
-  server.ts    # Chat agent with tools and scheduling
-  app.tsx      # Chat UI built with Kumo components
-  client.tsx   # React entry point
-  styles.css   # Tailwind + Kumo styles
+```sh
+npm test        # unit tests (vitest)
+npm run check   # format + lint + typecheck + tests
 ```
 
-## What's included
+### GitHub token (optional)
 
-- **AI Chat** — Streaming responses powered by Workers AI via `AIChatAgent`
-- **Image input** — Drag-and-drop, paste, or click to attach images for vision-capable models
-- **Three tool patterns** — server-side auto-execute, client-side (browser), and human-in-the-loop approval
-- **Scheduling** — one-time, delayed, and recurring (cron) tasks
-- **Reasoning display** — shows model thinking as it streams, collapses when done
-- **Debug mode** — toggle in the header to inspect raw message JSON for each message
-- **Kumo UI** — Cloudflare's design system with dark/light mode
-- **Real-time** — WebSocket connection with automatic reconnection and message persistence
+Public repos work without a token (GitHub allows 60 unauthenticated requests/hour). A token is needed for private repos, higher limits, and posting PR comments.
 
-## Making it your own
+Use a **fine-grained personal access token** limited to the repos you want reviewed, with _Pull requests: read and write_ and _Contents: read_. Locally put it in `.dev.vars`; in production:
 
-### Name your project
-
-Update the name in `package.json` and `wrangler.jsonc` — the `name` in `wrangler.jsonc` becomes your deployed Worker's URL (`<name>.<subdomain>.workers.dev`).
-
-### Change the system prompt
-
-Edit the `system` string in `server.ts` to give your agent a different personality or focus area. This is the most impactful single change you can make.
-
-### Replace the demo tools with real ones
-
-The starter ships with demo tools (`getWeather` returns random data, `calculate` does basic arithmetic). Replace them with real implementations:
-
-```ts
-// In server.ts, replace a demo tool with a real API call:
-getWeather: tool({
-  description: "Get the current weather for a city",
-  inputSchema: z.object({ city: z.string() }),
-  execute: async ({ city }) => {
-    const res = await fetch(`https://api.weather.example/${city}`);
-    return res.json();
-  }
-}),
-```
-
-### Add your own tools
-
-Add new tools to the `tools` object in `server.ts`. There are three patterns:
-
-```ts
-// Auto-execute: runs on the server, no user interaction
-myTool: tool({
-  description: "...",
-  inputSchema: z.object({ /* ... */ }),
-  execute: async (input) => { /* return result */ }
-}),
-
-// Client-side: no execute function, browser provides the result
-// Handle it in app.tsx via the onToolCall callback
-browserTool: tool({
-  description: "...",
-  inputSchema: z.object({ /* ... */ })
-}),
-
-// Approval: add needsApproval to gate execution
-sensitiveTool: tool({
-  description: "...",
-  inputSchema: z.object({ /* ... */ }),
-  needsApproval: async (input) => true, // or conditional logic
-  execute: async (input) => { /* runs after approval */ }
-}),
-```
-
-### Customize scheduled task behavior
-
-When a scheduled task fires, `executeTask` runs on the server. It does its work and then uses `this.broadcast()` to notify connected clients (shown as a toast notification in the UI). Replace it with your own logic:
-
-```ts
-async executeTask(description: string, task: Schedule<string>) {
-  // Do the actual work
-  await sendEmail({ to: "user@example.com", subject: description });
-
-  // Notify connected clients
-  this.broadcast(
-    JSON.stringify({ type: "scheduled-task", description, timestamp: new Date().toISOString() })
-  );
-}
-```
-
-> **Why `broadcast()` instead of `saveMessages()`?** Injecting into chat history can cause the AI to see the notification as new context and re-trigger the same task in a loop. `broadcast()` sends a one-off event that the client displays separately from the conversation.
-
-### Remove scheduling
-
-If you don't need scheduling, remove `scheduleTask`, `getScheduledTasks`, and `cancelScheduledTask` from the tools object, the `executeTask` method, and the schedule-related imports (`getSchedulePrompt`, `scheduleSchema`, `Schedule`).
-
-### Add state beyond chat messages
-
-Use `this.setState()` and `this.state` for real-time state that syncs to all connected clients. See [Store and sync state](https://developers.cloudflare.com/agents/api-reference/store-and-sync-state/).
-
-### Add callable methods
-
-Expose agent methods as typed RPC that your client can call directly:
-
-```ts
-import { callable } from "agents";
-
-export class ChatAgent extends AIChatAgent<Env> {
-  @callable()
-  async getStats() {
-    return { messageCount: this.messages.length };
-  }
-}
-
-// Client-side:
-const stats = await agent.call("getStats");
-```
-
-See [Callable methods](https://developers.cloudflare.com/agents/api-reference/callable-methods/).
-
-### Connect to MCP servers
-
-Add external tools from MCP servers:
-
-```ts
-async onChatMessage(onFinish, options) {
-  // Connect to an MCP server
-  await this.mcp.connect("https://my-mcp-server.example/sse");
-
-  const result = streamText({
-    // ...
-    tools: {
-      ...myTools,
-      ...this.mcp.getAITools() // Include MCP tools
-    }
-  });
-}
-```
-
-See [MCP Client API](https://developers.cloudflare.com/agents/api-reference/mcp-client-api/).
-
-## Use a different AI model provider
-
-The starter uses [Workers AI](https://developers.cloudflare.com/workers-ai/) by default (no API key needed). To use a different provider:
-
-### OpenAI
-
-```bash
-npm install @ai-sdk/openai
-```
-
-```ts
-// In server.ts, replace the model:
-import { openai } from "@ai-sdk/openai";
-
-// Inside onChatMessage:
-const result = streamText({
-  model: openai("gpt-5.2")
-  // ...
-});
-```
-
-Create a `.env` file with your API key:
-
-```
-OPENAI_API_KEY=your-key-here
-```
-
-### Anthropic
-
-```bash
-npm install @ai-sdk/anthropic
-```
-
-```ts
-import { anthropic } from "@ai-sdk/anthropic";
-
-const result = streamText({
-  model: anthropic("claude-sonnet-4-20250514")
-  // ...
-});
-```
-
-Create a `.env` file with your API key:
-
-```
-ANTHROPIC_API_KEY=your-key-here
+```sh
+npx wrangler secret put GITHUB_TOKEN
 ```
 
 ## Deploy
 
-```bash
-npm run deploy
+```sh
+npm run deploy   # vite build && wrangler deploy
 ```
 
-Your agent is live on Cloudflare's global network. Messages persist in SQLite, streams resume on disconnect, and the agent hibernates when idle.
+This deploys the Worker, the `GuardianAgent` Durable Object (SQLite-backed) and the `codex-review` Workflow.
 
-## Learn more
+## Demo script
 
-- [Agents SDK documentation](https://developers.cloudflare.com/agents/)
-- [Build a chat agent tutorial](https://developers.cloudflare.com/agents/getting-started/build-a-chat-agent/)
-- [Chat agents API reference](https://developers.cloudflare.com/agents/api-reference/chat-agents/)
-- [Workers AI models](https://developers.cloudflare.com/workers-ai/models/)
+1. Open the app (or `?codex=demo` for a fresh codex). The panel on the right shows six starter rules (3 regex, 3 LLM).
+2. **"What rules are in our codex?"** — the agent reads the codex and summarises it.
+3. **"Add a rule: no TODO comments without a ticket like ABC-123"** — it picks a regex rule and writes the pattern; the new rule appears in the panel instantly.
+4. **"Add a rule that functions must have JSDoc comments"** — this needs judgement, so it becomes an LLM rule.
+5. **"Allow console.log in scripts/\*\* because build scripts print progress"** — adds an exception instead of weakening the rule.
+6. **"Review https://github.com/sayyedarib/cf_ai_codex_guardian/pull/1"** — a demo PR that breaks rules on purpose. Watch the steps tick through; findings include the hardcoded key, SQL built from input, the empty `catch`, `any`, `console.log` (but not the one in `scripts/`, which is waived) and vague names.
+7. **"Explain the SQL injection finding"** — the agent pulls the report and explains file, line, rule and fix.
+8. Toggle or delete a rule in the panel, then review again to see the difference. With a `GITHUB_TOKEN` set, ask **"Review … and post a summary comment"** and approve it in the card.
 
-## License
+## Design notes
 
-MIT
+- **Pure core, thin adapters.** Everything in `src/review/` (diff parsing, glob matching, regex rules, LLM batching and output parsing, exceptions, report formatting, review state transitions) has no Cloudflare imports and is unit tested. The LLM is injected as a `(messages) => Promise<string>` function.
+- **Making Llama 3.3 reliable for tool use.** Findings from testing, each handled in one small module:
+  - A long system prompt makes it stop calling tools → the prompt is a few lines and guidance lives in tool descriptions.
+  - One "add rule" tool with a `kind` switch made it write the call as text → split into `addRegexRule` and `addLlmRule`.
+  - It sometimes still writes a tool call as JSON text, especially in long chats → a model middleware (`src/llm/leaked-tool-calls.ts`) turns those into real tool calls, and only the last 10 messages are sent.
+  - It sends booleans as `"false"` → tool schemas accept both.
+  - `workers-ai-provider` 4.0.0 emitted every streamed token and tool call twice (Workers AI sends both native and OpenAI-style fields) → `src/llm/dedupe-stream.ts` filters the duplicates until that's fixed upstream.
+- **State is a projection.** SQLite is the source of truth; after every change the agent pushes `{ rules, exceptions, recent reviews }` to all clients. Clients can't write state directly — only through validated `@callable` methods.
+
+## Limitations
+
+- No authentication: anyone with the URL and a codex name can edit that codex. Fine for a demo; production would put Cloudflare Access or OAuth in front.
+- Reviews look at added lines only (not whole files), up to 60 files and 30 LLM batches per PR; the report says when limits were hit.
+- LLM rules are only as good as the model. Findings are labelled `LLM` vs regex in the UI.
+
+## Project layout
+
+See [AGENTS.md](AGENTS.md) for the structure, conventions and commands. [PROMPTS.md](PROMPTS.md) has the prompts used to build this with AI assistance.

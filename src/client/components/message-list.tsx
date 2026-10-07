@@ -9,7 +9,7 @@ export const SUGGESTED_PROMPTS = [
   "What rules are in our codex?",
   "Add a rule: no TODO comments without a ticket like ABC-123",
   "Allow console.log in scripts/**",
-  "Review https://github.com/cloudflare/agents/pull/1"
+  "Review https://github.com/sayyedarib/cf_ai_codex_guardian/pull/1"
 ];
 
 interface MessageListProps {

@@ -1,7 +1,8 @@
 /**
  * Minimal glob matching for rule scopes and exceptions.
- * Supports `**`, `*`, `?` and `{a,b}`. A glob without a `/` matches the file
- * name in any directory (like .gitignore), so `*.ts` matches `src/a.ts`.
+ * Supports `**`, `*`, `?` and `{a,b}`. Globs match at any depth, the way
+ * people phrase them in chat: `scripts/**` matches `tools/scripts/x.js` and
+ * `*.ts` matches `src/a.ts`. A leading `/` anchors the glob to the repo root.
  */
 
 const cache = new Map<string, RegExp>();
@@ -49,17 +50,23 @@ function escapeRegExp(text: string): string {
 }
 
 export function matchesGlob(path: string, glob: string): boolean {
+  const anchored = glob.startsWith("/");
+  const pattern = anchored ? glob.slice(1) : glob;
+  if (compile(pattern).test(path)) return true;
+  return (
+    !anchored &&
+    !pattern.startsWith("**/") &&
+    compile(`**/${pattern}`).test(path)
+  );
+}
+
+function compile(glob: string): RegExp {
   let regex = cache.get(glob);
   if (!regex) {
     regex = globToRegExp(glob);
     cache.set(glob, regex);
   }
-  if (regex.test(path)) return true;
-  if (!glob.includes("/")) {
-    const name = path.slice(path.lastIndexOf("/") + 1);
-    return regex.test(name);
-  }
-  return false;
+  return regex;
 }
 
 export function matchesAnyGlob(path: string, globs: readonly string[]) {

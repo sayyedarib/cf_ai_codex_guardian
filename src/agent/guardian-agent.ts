@@ -7,14 +7,18 @@ import { AIChatAgent, type OnChatMessageOptions } from "@cloudflare/ai-chat";
 import { callable, type Connection } from "agents";
 import {
   convertToModelMessages,
+  hasToolCall,
   pruneMessages,
   stepCountIs,
-  streamText
+  streamText,
+  wrapLanguageModel
 } from "ai";
 import { createWorkersAI } from "workers-ai-provider";
 import { COMMENT_DECISION_EVENT, REVIEW_WORKFLOW } from "../config";
 import { parsePullRequestRef } from "../github/pr-ref";
+import { recentMessages } from "../llm/context-window";
 import { withDedupedStreams } from "../llm/dedupe-stream";
+import { recoverLeakedToolCalls } from "../llm/leaked-tool-calls";
 import { MODEL } from "../llm/workers-ai";
 import {
   formatPrComment,
@@ -44,6 +48,9 @@ import { CodexStore } from "../storage/codex-store";
 import type { ReviewParams } from "../workflow/review-workflow";
 import { SYSTEM_PROMPT } from "./system-prompt";
 import { createGuardianTools } from "./tools";
+
+/** How many recent chat messages the model sees. */
+const CHAT_CONTEXT_MESSAGES = 10;
 
 /** How many recent reviews are synced to the UI. */
 const SYNCED_REVIEWS = 10;
@@ -76,16 +83,23 @@ export class GuardianAgent extends AIChatAgent<Env, CodexState> {
       binding: withDedupedStreams(this.env.AI)
     });
     const result = streamText({
-      model: workersai(MODEL),
+      model: wrapLanguageModel({
+        model: workersai(MODEL),
+        middleware: recoverLeakedToolCalls
+      }),
       system: SYSTEM_PROMPT,
       messages: pruneMessages({
-        messages: await convertToModelMessages(this.messages),
+        messages: await convertToModelMessages(
+          recentMessages(this.messages, CHAT_CONTEXT_MESSAGES)
+        ),
         toolCalls: "before-last-2-messages"
       }),
       tools: createGuardianTools(this),
       // Workers AI defaults to 256 output tokens, which cuts answers short.
       maxOutputTokens: 1500,
-      stopWhen: stepCountIs(8),
+      // A started review is shown live in its own card, so end the turn
+      // there; otherwise the model tends to poll getReview in a loop.
+      stopWhen: [stepCountIs(8), hasToolCall("reviewPullRequest")],
       abortSignal: options?.abortSignal
     });
     return result.toUIMessageStreamResponse();
