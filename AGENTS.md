@@ -14,7 +14,7 @@ A Cloudflare Worker that serves a React chat app and hosts:
 
 ```
 src/
-  server.ts                 Worker entry: routes /agents/*, exports agent + workflow
+  server.ts                 Worker entry: routes /mcp and /agents/*, exports agent + workflow
   config.ts                 Env helpers and binding/event names
   agent/
     guardian-agent.ts       AIChatAgent: chat loop, codex methods, workflow callbacks, state sync
@@ -22,6 +22,8 @@ src/
     system-prompt.ts        Kept short on purpose (see "LLM rules" below)
   workflow/
     review-workflow.ts      The PR review pipeline (step.do per external call)
+  mcp/
+    server.ts               Stateless MCP server: check_diff, list_codex
   github/
     client.ts               GitHub REST: PR files/patches, post comment
     pr-ref.ts               Parse PR URLs / owner/repo#n (pure)
@@ -38,6 +40,7 @@ src/
     regex-rules.ts          Run regex rules
     llm-rules.ts            Batch building, prompt, zod-validated output parsing
     exceptions.ts           Waive findings covered by exceptions
+    pipeline.ts             Regex → LLM batches → exceptions; shared by workflow and MCP
     report.ts               Sorting, summaries, markdown report / PR comment
     review-record.ts        State transitions for a ReviewRecord
   storage/
@@ -52,6 +55,7 @@ src/
     codex-context.tsx       State + actions passed to components
     components/             message-list, tool-part, review-card, codex-panel, theme-toggle
 test/                       Vitest unit tests for pure logic (one file per module area)
+evals/                      Labelled diffs (cases/*.diff + labels.json) and run.ts scorer
 examples/                   Only on the demo PR branch
 ```
 
@@ -64,6 +68,7 @@ npm run check     # oxfmt --check, oxlint, tsc, vitest — must pass before comm
 npm run format    # oxfmt --write
 npm run types     # regenerate env.d.ts after changing wrangler.jsonc
 npm run deploy    # vite build && wrangler deploy
+npm run eval      # score labelled diffs against the deployed MCP endpoint (or pass a URL)
 ```
 
 ## Conventions
@@ -77,7 +82,8 @@ npm run deploy    # vite build && wrangler deploy
 - **Workflows.** Every external or non-deterministic call is a `step.do` with an explicit retry config. Deterministic pure work can run outside steps. Step names must be stable and unique (`llm-batch-${i}`). Use `NonRetryableError` for errors that can't succeed on retry. Copy plain data out of agent RPC results and dispose them (`using`).
 - **Errors in chat tools** are returned as `{ error }` (via `safely`) so the model can explain or self-correct. Error messages should say how to fix the input (e.g. list valid rule ids).
 - **Style.** Match the surrounding code. Short doc comments explaining _why_, not what. oxfmt formatting (80 cols, no trailing commas).
-- **Dependencies.** Latest stable releases only (npm `latest` tag; no beta/rc/next). Don't add a dependency for something a few lines of code can do.
+- **Dependencies.** Latest stable releases only (npm `latest` tag; no beta/rc/next). Don't add a dependency for something a few lines of code can do. Exception: `@modelcontextprotocol/server` stays at the exact version `agents` declares as its peer (currently 2.0.0).
+- **One pipeline.** Rule checking goes through `review/pipeline.ts`. The workflow and MCP server differ only in how they run a batch (`runBatch`) and report progress. Don't fork the logic.
 
 ## LLM rules (learned the hard way — keep these)
 
@@ -92,6 +98,7 @@ Llama 3.3 on Workers AI is sensitive. When touching chat or tools:
 ## Do
 
 - Add a test with every change to `src/review/`, `src/llm/` or other pure modules.
+- Run `npm run eval` after changing rule evaluation, prompts or the default codex, and add a labelled case for any bug you fix.
 - Run `npm run check` before committing.
 - Run `npm run types` after editing `wrangler.jsonc`.
 - Add a **new** migration tag in `wrangler.jsonc` when adding/renaming a Durable Object class.

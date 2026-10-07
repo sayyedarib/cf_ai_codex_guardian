@@ -1,0 +1,10 @@
+diff --git a/package-lock.json b/package-lock.json
+new file mode 100644
+--- /dev/null
++++ b/package-lock.json
+@@ -0,0 +1,5 @@
++{
++  "name": "demo",
++  "lockfileVersion": 3,
++  "console": "console.log(\"not code\")"
++}

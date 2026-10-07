@@ -19,13 +19,15 @@
     "lint": "oxlint src/",
     "check": "oxfmt --check . && oxlint src/ && tsc && vitest run",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "eval": "node evals/run.ts"
   },
   "dependencies": {
     "@ai-sdk/provider": "^4.0.24",
     "@ai-sdk/react": "^4.0.133",
     "@cloudflare/ai-chat": "^0.12.1",
     "@cloudflare/kumo": "^2.14.0",
+    "@modelcontextprotocol/server": "^2.0.0",
     "@phosphor-icons/react": "^2.1.10",
     "@streamdown/code": "^2.0.0",
     "agents": "^0.26.0",

@@ -23,6 +23,7 @@ Built on Cloudflare for the AI app assignment:
 ```mermaid
 flowchart LR
   UI["React UI<br/>chat · codex panel · review cards"]
+  IDE["Claude Code / Cursor<br/>(MCP client)"]
   subgraph Worker["Cloudflare Worker"]
     Agent["GuardianAgent<br/>AIChatAgent on a Durable Object<br/>SQLite: rules · exceptions · reviews · chat"]
     WF["ReviewWorkflow<br/>(Cloudflare Workflows)"]
@@ -37,7 +38,10 @@ flowchart LR
   WF -.->|"reportProgress → onWorkflowProgress"| Agent
   WF -->|"rule evaluation (JSON mode)"| AI
   WF -->|"PR files + patches, post comment"| GH
+  IDE -->|"POST /mcp: check_diff, list_codex"| Worker
 ```
+
+The MCP endpoint is stateless: it reads the team's codex from the same `GuardianAgent` and runs the same pipeline (`src/review/pipeline.ts`) as the workflow, inline.
 
 ### The review workflow
 
@@ -50,6 +54,53 @@ Each external call is its own `step.do`, so it's retried with backoff and never 
 5. **Apply exceptions** — findings waived by an exception (rule + file glob) are dropped and counted.
 6. **Save review** — stored in SQLite and synced to the UI.
 7. **Post PR comment (optional)** — only if you asked for it. The workflow then **waits (durably, up to 24h) for you to click Approve** in the chat before posting.
+
+## Check a diff from your editor (MCP)
+
+The Worker exposes an MCP server at `/mcp` with two tools:
+
+- `check_diff({ diff, codex?, useLlm? })` — checks a unified `git diff` against a codex. Returns the markdown report plus structured findings (`structuredContent`).
+- `list_codex({ codex? })` — the team's rules and exceptions.
+
+Claude Code:
+
+```sh
+claude mcp add --transport http codex-guardian https://codex-guardian.sayyedaribhussain4321.workers.dev/mcp
+```
+
+Then ask: _"Run `git diff main` and check it with codex-guardian before I push."_
+
+Cursor (`.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "codex-guardian": {
+      "url": "https://codex-guardian.sayyedaribhussain4321.workers.dev/mcp"
+    }
+  }
+}
+```
+
+## Evals
+
+`evals/` has labelled diffs (true positives and clean look-alikes such as a parameterized query or a catch that logs and rethrows). `npm run eval` sends each one to the deployed `check_diff` tool with a fresh default codex and scores it: every expected finding must be reported (rule + line ±1) and no forbidden rule may fire.
+
+```
+PASS  console-log
+PASS  hardcoded-secret
+PASS  explicit-any
+PASS  sql-injection
+PASS  sql-safe
+PASS  empty-catch
+PASS  handled-catch
+PASS  clean
+PASS  lockfile
+
+9/9 cases passed · recall 5/5 · 0 false positive(s) on forbidden rules
+```
+
+(Three consecutive runs gave the same result.) Point it at a local server with `npm run eval -- http://localhost:5173/mcp`.
 
 ## Run it locally
 
@@ -109,7 +160,8 @@ This deploys the Worker, the `GuardianAgent` Durable Object (SQLite-backed) and 
 
 ## Limitations
 
-- No authentication: anyone with the URL and a codex name can edit that codex. Fine for a demo; production would put Cloudflare Access or OAuth in front.
+- No authentication: anyone with the URL and a codex name can edit that codex or use the MCP endpoint. Fine for a demo; production would put Cloudflare Access or OAuth in front.
+- MCP diff checks run inline (no workflow), so they are capped at 12 LLM batches.
 - Reviews look at added lines only (not whole files), up to 60 files and 30 LLM batches per PR; the report says when limits were hit.
 - LLM rules are only as good as the model. Findings are labelled `LLM` vs regex in the UI.
 

@@ -15,15 +15,11 @@ import { GitHubClient, GitHubError } from "../github/client";
 import { createRuleEvaluator } from "../llm/workers-ai";
 import { toFileChanges } from "../review/changes";
 import { applyExceptions } from "../review/exceptions";
-import {
-  buildLlmBatches,
-  evaluateBatch,
-  type BatchResult
-} from "../review/llm-rules";
+import { evaluateBatch } from "../review/llm-rules";
+import { runLlmRules } from "../review/pipeline";
 import { runRegexRules } from "../review/regex-rules";
 import type { ReviewOutcome } from "../review/review-record";
 import type {
-  Finding,
   PullRequestRef,
   ReviewStepId,
   StepProgress,
@@ -110,7 +106,20 @@ export class ReviewWorkflow extends AgentWorkflow<
     // 4. LLM rules in small batches. A batch that keeps failing is noted, never fatal.
     const llmFindings = await this.stage(
       "llm_rules",
-      () => this.runLlmRules(step, changes, codex.rules, warnings),
+      async () => {
+        const complete = createRuleEvaluator(this.env.AI);
+        const pass = await runLlmRules(changes, codex.rules, {
+          concurrency: LLM_CONCURRENCY,
+          runBatch: (batch, i) =>
+            step.do(`llm-batch-${i}`, LLM_STEP, () =>
+              evaluateBatch(batch, complete)
+            ),
+          onProgress: (done, total) =>
+            this.progress("llm_rules", "running", `${done}/${total} batches`)
+        });
+        warnings.push(...pass.warnings);
+        return pass.findings;
+      },
       (f) => `${f.length} findings`
     );
 
@@ -141,68 +150,6 @@ export class ReviewWorkflow extends AgentWorkflow<
     if (postComment) await this.postComment(step, reviewId, pr, github);
 
     await step.reportComplete({ reviewId });
-  }
-
-  private async runLlmRules(
-    step: AgentWorkflowStep,
-    changes: Parameters<typeof buildLlmBatches>[0],
-    rules: Parameters<typeof buildLlmBatches>[1],
-    warnings: string[]
-  ): Promise<Finding[]> {
-    const { batches, truncated } = buildLlmBatches(changes, rules);
-    if (truncated) {
-      warnings.push(
-        `LLM checks were capped at ${batches.length} batches; some lines were only checked by regex rules.`
-      );
-    }
-    const complete = createRuleEvaluator(this.env.AI);
-    const findings: Finding[] = [];
-    let failed = 0;
-    let dropped = 0;
-
-    for (let i = 0; i < batches.length; i += LLM_CONCURRENCY) {
-      const group = batches.slice(i, i + LLM_CONCURRENCY);
-      const results = await Promise.all(
-        group.map((batch, j) =>
-          step
-            .do(`llm-batch-${i + j}`, LLM_STEP, () =>
-              evaluateBatch(batch, complete)
-            )
-            .catch((err): BatchResult => ({
-              findings: [],
-              dropped: 0,
-              error: err instanceof Error ? err.message : String(err)
-            }))
-        )
-      );
-      for (const [j, result] of results.entries()) {
-        findings.push(...result.findings);
-        dropped += result.dropped;
-        if (result.error) {
-          failed++;
-          console.warn(
-            `LLM batch for ${group[j].file} failed: ${result.error}`
-          );
-        }
-      }
-      await this.progress(
-        "llm_rules",
-        "running",
-        `${Math.min(i + LLM_CONCURRENCY, batches.length)}/${batches.length} batches`
-      );
-    }
-
-    if (failed > 0) {
-      warnings.push(
-        `${failed} of ${batches.length} LLM batches failed and were skipped.`
-      );
-    }
-    if (dropped > 0) {
-      warnings.push(
-        `${dropped} LLM finding(s) were discarded as invalid (unknown rule or line).`
-      );
-    }
-    return findings;
   }
 
   private async postComment(

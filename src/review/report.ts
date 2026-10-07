@@ -65,27 +65,49 @@ function formatFinding(f: Finding): string {
   return `- ${SEVERITY_ICON[f.severity]} \`${f.file}:${f.line}\` — **${f.ruleTitle}** (\`${f.ruleId}\`)\n  - ${f.message}\n  - \`${f.snippet.replace(/`/g, "'")}\`${fix}`;
 }
 
-/** Markdown report used both in chat and as the PR comment body. */
-export function formatReviewMarkdown(review: ReviewRecord): string {
+export interface ReportContent {
+  heading: string;
+  subtitle?: string;
+  findings: readonly Finding[];
+  filesReviewed: number;
+  suppressedCount: number;
+  warnings: readonly string[];
+}
+
+/** Markdown for a set of findings; shared by PR reviews and diff checks. */
+export function formatReport(report: ReportContent): string {
+  const files = `${report.filesReviewed} file${report.filesReviewed === 1 ? "" : "s"} reviewed`;
   const lines = [
-    `### Codex Guardian review of [${prLabel(review.pr)}](${prUrl(review.pr)})`,
-    review.title ? `_${review.title}_` : "",
+    `### ${report.heading}`,
+    report.subtitle ? `_${report.subtitle}_` : "",
     "",
-    `**${summaryLine(review.findings)}** · ${review.filesReviewed} file${review.filesReviewed === 1 ? "" : "s"} reviewed`,
-    review.suppressedCount > 0
-      ? `${review.suppressedCount} finding(s) waived by codex exceptions.`
+    `**${summaryLine(report.findings)}** · ${files}`,
+    report.suppressedCount > 0
+      ? `${report.suppressedCount} finding(s) waived by codex exceptions.`
       : "",
     "",
-    ...review.findings.map(formatFinding)
+    ...report.findings.map(formatFinding)
   ];
-  if (review.warnings.length > 0) {
+  if (report.warnings.length > 0) {
     lines.push("", "<details><summary>Review notes</summary>", "");
-    lines.push(...review.warnings.map((w) => `- ${w}`), "", "</details>");
+    lines.push(...report.warnings.map((w) => `- ${w}`), "", "</details>");
   }
   return lines
     .filter((l, i, all) => l !== "" || all[i - 1] !== "")
     .join("\n")
     .trim();
+}
+
+/** Markdown report used both in chat and as the PR comment body. */
+export function formatReviewMarkdown(review: ReviewRecord): string {
+  return formatReport({
+    heading: `Codex Guardian review of [${prLabel(review.pr)}](${prUrl(review.pr)})`,
+    subtitle: review.title,
+    findings: review.findings,
+    filesReviewed: review.filesReviewed,
+    suppressedCount: review.suppressedCount,
+    warnings: review.warnings
+  });
 }
 
 export function formatPrComment(review: ReviewRecord): string {

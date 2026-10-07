@@ -1,0 +1,56 @@
+{
+  "$comment": "Expected findings per case, against the default starter codex. `expected` must be found (ruleId + line); `forbidden` rules must not fire. Rules not listed in either are not scored for that case.",
+  "cases": [
+    {
+      "id": "console-log",
+      "expected": [{ "ruleId": "no-console-log", "line": 3 }],
+      "forbidden": ["no-hardcoded-secrets", "no-sql-injection"]
+    },
+    {
+      "id": "hardcoded-secret",
+      "expected": [{ "ruleId": "no-hardcoded-secrets", "line": 3 }],
+      "forbidden": ["no-console-log", "no-sql-injection"]
+    },
+    {
+      "id": "explicit-any",
+      "expected": [{ "ruleId": "no-explicit-any", "line": 2 }],
+      "forbidden": ["no-hardcoded-secrets"]
+    },
+    {
+      "id": "sql-injection",
+      "expected": [{ "ruleId": "no-sql-injection", "line": 4 }],
+      "forbidden": ["no-hardcoded-secrets", "no-console-log"]
+    },
+    {
+      "id": "sql-safe",
+      "expected": [],
+      "forbidden": ["no-sql-injection", "no-hardcoded-secrets"]
+    },
+    {
+      "id": "empty-catch",
+      "expected": [{ "ruleId": "errors-must-be-handled", "line": 5 }],
+      "forbidden": ["no-sql-injection"]
+    },
+    {
+      "id": "handled-catch",
+      "expected": [],
+      "forbidden": ["errors-must-be-handled", "no-console-log"]
+    },
+    {
+      "id": "clean",
+      "expected": [],
+      "forbidden": [
+        "no-console-log",
+        "no-hardcoded-secrets",
+        "no-explicit-any",
+        "no-sql-injection",
+        "errors-must-be-handled"
+      ]
+    },
+    {
+      "id": "lockfile",
+      "expected": [],
+      "forbidden": ["no-console-log", "no-hardcoded-secrets"]
+    }
+  ]
+}
