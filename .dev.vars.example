@@ -1,0 +1,3 @@
+# Optional. Needed only for private repos, higher GitHub rate limits, and posting PR comments.
+# Use a fine-grained token with read access to contents/pull requests (and write to pull requests to comment).
+GITHUB_TOKEN=
